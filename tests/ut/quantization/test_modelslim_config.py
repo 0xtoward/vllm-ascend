@@ -15,6 +15,7 @@ from vllm_ascend.ops.linear import AscendUnquantizedLinearMethod
 from vllm_ascend.quantization.modelslim_config import (
     MODELSLIM_CONFIG_FILENAME,
     AscendModelSlimConfig,
+    get_packed_modules_mapping,
 )
 from vllm_ascend.utils import ASCEND_QUANTIZATION_METHOD
 
@@ -57,6 +58,16 @@ class TestAscendModelSlimConfig(TestBase):
     def test_get_config_filenames(self):
         filenames = AscendModelSlimConfig.get_config_filenames()
         self.assertEqual(filenames, [])
+
+    def test_minicpmo_uses_qwen3_packed_projection_mapping(self):
+        """MiniCPM-o's inner Qwen3 decoder is packed by vLLM at load time."""
+        self.assertEqual(
+            get_packed_modules_mapping("minicpmo"),
+            {
+                "qkv_proj": ["q_proj", "k_proj", "v_proj"],
+                "gate_up_proj": ["gate_proj", "up_proj"],
+            },
+        )
 
     def test_from_config(self):
         config = AscendModelSlimConfig.from_config(self.sample_config)
