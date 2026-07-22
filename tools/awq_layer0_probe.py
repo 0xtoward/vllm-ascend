@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Run an official-checkpoint AWQ layer-0 correctness probe on one NPU."""
+"""Run an official-checkpoint AWQ layer-0 correctness probe on one NPU.
+
+Run this from the repository root as ``python -m tools.awq_layer0_probe``.
+Executing the file by path adds ``tools/`` to ``sys.path`` and makes its
+``bisect`` package shadow Python's standard-library module of the same name.
+"""
 
 from __future__ import annotations
 
