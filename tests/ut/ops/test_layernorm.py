@@ -5,6 +5,7 @@ import torch
 from vllm.config import set_current_vllm_config
 from vllm.model_executor.layers.layernorm import RMSNorm
 
+from vllm_ascend.ops.layernorm import AscendRMSNorm
 from vllm_ascend.utils import enable_custom_op
 from vllm_ascend.utils import is_310p as is_310p_hw
 
@@ -29,6 +30,16 @@ def mock_add_rms_norm_bias(x, residual, weight, bias, eps):
         return 2 * x, None, 2 * residual
     else:
         return 2 * x + bias, None, 2 * residual
+
+
+@patch("vllm_ascend.ops.layernorm.get_current_vllm_config")
+def test_rmsnorm_non_modelslim_quant_config_has_no_bias(mock_get_config):
+    mock_get_config.return_value.quant_config = object()
+
+    layer = AscendRMSNorm(hidden_size=8, eps=1e-5)
+
+    assert layer.bias is None
+    assert not layer.bias_loaded
 
 
 @pytest.fixture(autouse=True)

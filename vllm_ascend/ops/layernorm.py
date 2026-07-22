@@ -39,10 +39,12 @@ class AscendRMSNorm(RMSNorm):
         self.bias = None
         self.bias_loaded = False
 
-        # quantization with anti_method m4 will generate none-zero norm bias
-        if vllm_config.quant_config is not None and any(
-            "norm.bias" in name for name in vllm_config.quant_config.quant_description
-        ):
+        # ModelSlim quantization with anti_method m4 can generate a non-zero
+        # norm bias. Other quantization configs (for example AutoAWQ) do not
+        # expose ModelSlim's ``quant_description`` metadata and must retain the
+        # standard bias-free RMSNorm contract.
+        quant_description = getattr(vllm_config.quant_config, "quant_description", {})
+        if any("norm.bias" in name for name in quant_description):
             self.bias = torch.nn.Parameter(torch.zeros(hidden_size), requires_grad=False)
             self.bias.weight_loader = self._bias_weight_loader
 
