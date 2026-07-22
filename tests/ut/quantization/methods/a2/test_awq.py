@@ -37,7 +37,15 @@ class TestAscendAWQLinearMethod(TestBase):
         "vllm.model_executor.parameter.get_tensor_model_parallel_rank",
         return_value=0,
     )
-    def test_create_weights_reuses_autoawq_checkpoint_layout(self, _mock_tp_rank):
+    @patch(
+        "vllm.model_executor.parameter.get_tensor_model_parallel_world_size",
+        return_value=1,
+    )
+    def test_create_weights_reuses_autoawq_checkpoint_layout(
+        self,
+        _mock_tp_world_size,
+        _mock_tp_rank,
+    ):
         layer = torch.nn.Module()
         self.method.create_weights(
             layer,
