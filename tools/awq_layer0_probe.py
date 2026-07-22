@@ -43,6 +43,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--device", default="npu:0")
     parser.add_argument("--seed", type=int, default=20260722)
+    parser.add_argument(
+        "--profile-dir",
+        type=Path,
+        help="Optionally profile only q_proj at M=8 and export analysed text data.",
+    )
     return parser.parse_args()
 
 
@@ -71,6 +76,66 @@ def tensor_metrics(actual: torch.Tensor, reference: torch.Tensor) -> dict:
         "mean_abs": float(diff.abs().mean().cpu()),
         "finite": bool(torch.isfinite(actual_f32).all().cpu()),
     }
+
+
+def run_weight_quant_matmul(
+    *,
+    x: torch.Tensor,
+    packed_weight: torch.Tensor,
+    scales: torch.Tensor,
+    offsets: torch.Tensor,
+    profile_dir: Path | None,
+) -> torch.Tensor:
+    def invoke() -> torch.Tensor:
+        return torch_npu.npu_weight_quant_batchmatmul(
+            x=x,
+            weight=packed_weight,
+            antiquant_scale=scales,
+            antiquant_offset=offsets,
+            antiquant_group_size=GROUP_SIZE,
+            bias=None,
+            inner_precise=0,
+        )
+
+    if profile_dir is None:
+        return invoke()
+
+    profile_dir.mkdir(parents=True, exist_ok=True)
+    experimental_config = torch_npu.profiler._ExperimentalConfig(
+        profiler_level=torch_npu.profiler.ProfilerLevel.Level1,
+        aic_metrics=torch_npu.profiler.AiCMetrics.PipeUtilization,
+        l2_cache=False,
+        data_simplification=False,
+        export_type=torch_npu.profiler.ExportType.Text,
+    )
+    trace_handler = torch_npu.profiler.tensorboard_trace_handler(
+        str(profile_dir),
+        analyse_flag=True,
+        async_mode=False,
+    )
+    with torch_npu.profiler.profile(
+        activities=[
+            torch_npu.profiler.ProfilerActivity.CPU,
+            torch_npu.profiler.ProfilerActivity.NPU,
+        ],
+        schedule=torch_npu.profiler.schedule(
+            wait=0,
+            warmup=0,
+            active=1,
+            repeat=1,
+            skip_first=0,
+        ),
+        on_trace_ready=trace_handler,
+        record_shapes=True,
+        profile_memory=True,
+        with_flops=True,
+        experimental_config=experimental_config,
+    ) as profiler:
+        with torch.profiler.record_function("minicpmo45_awq_q_proj_m8"):
+            output = invoke()
+        torch.npu.synchronize()
+        profiler.step()
+    return output
 
 
 def main() -> int:
@@ -125,14 +190,17 @@ def main() -> int:
                 dtype=torch.bfloat16,
             )
             reference = torch.matmul(x, reference_weight)
-            actual = torch_npu.npu_weight_quant_batchmatmul(
+            profile_dir = (
+                args.profile_dir
+                if projection == "self_attn.q_proj" and m_size == 8
+                else None
+            )
+            actual = run_weight_quant_matmul(
                 x=x,
-                weight=packed_weight,
-                antiquant_scale=scales,
-                antiquant_offset=offsets,
-                antiquant_group_size=GROUP_SIZE,
-                bias=None,
-                inner_precise=0,
+                packed_weight=packed_weight,
+                scales=scales,
+                offsets=offsets,
+                profile_dir=profile_dir,
             )
             torch.npu.synchronize()
             metrics = tensor_metrics(actual, reference)
@@ -178,6 +246,7 @@ def main() -> int:
         "seed": args.seed,
         "group_size": GROUP_SIZE,
         "inner_precise": 0,
+        "profile_dir": str(args.profile_dir) if args.profile_dir else None,
         "thresholds": {"cosine_min": 0.999, "nrmse_max": 0.02},
         "records": records,
         "passed": all(record["pass"] for record in records),
