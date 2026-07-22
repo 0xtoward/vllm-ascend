@@ -37,6 +37,7 @@ from vllm_ascend.ascend_config import init_ascend_config
 
 # isort: off
 from vllm_ascend.utils import (
+    ASCEND_AWQ_QUANTIZATION_METHOD,
     ASCEND_QUANTIZATION_METHOD,
     COMPILATION_PASS_KEY,
     COMPRESSED_TENSORS_METHOD,
@@ -139,6 +140,7 @@ class NPUPlatform(Platform):
 
     supported_quantization: list[str] = [
         ASCEND_QUANTIZATION_METHOD,
+        ASCEND_AWQ_QUANTIZATION_METHOD,
         COMPRESSED_TENSORS_METHOD,
         FP8_METHOD,
         "deepseek_v4_fp8",
@@ -187,17 +189,24 @@ class NPUPlatform(Platform):
 
         adapt_patch(is_global_patch=True)
 
-        # For online serving, "ascend" quantization method is not a choice natively,
-        # so we need to add "ascend" quantization method to quantization methods list
-        # and the user can enable quantization using "vllm serve --quantization ascend".
+        # Ascend-specific quantization methods are not native vLLM CLI choices.
         if parser is not None:
             quant_action = parser._option_string_actions.get("--quantization")
             if quant_action and hasattr(quant_action, "choices") and quant_action.choices:
-                if ASCEND_QUANTIZATION_METHOD not in quant_action.choices:
-                    quant_action.choices.append(ASCEND_QUANTIZATION_METHOD)
+                for method in (
+                    ASCEND_QUANTIZATION_METHOD,
+                    ASCEND_AWQ_QUANTIZATION_METHOD,
+                ):
+                    if method not in quant_action.choices:
+                        quant_action.choices.append(method)
 
         if not is_310p():
-            from vllm_ascend.quantization import AscendCompressedTensorsConfig, AscendFp8Config, AscendModelSlimConfig  # noqa: F401
+            from vllm_ascend.quantization import (  # noqa: F401
+                AscendAWQConfig,
+                AscendCompressedTensorsConfig,
+                AscendFp8Config,
+                AscendModelSlimConfig,
+            )
         else:
             from vllm_ascend._310p.quantization import AscendModelSlimConfig310  # noqa: F401
 
