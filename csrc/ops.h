@@ -24,6 +24,10 @@
 #include "torch_npu/csrc/aten/common/from_blob.h"
 
 namespace vllm_ascend {
+  extern void channel_layer_norm_mish_impl(
+      void* stream, void* x, void* weight, void* bias, void* y,
+      uint32_t batch, uint32_t channels, uint32_t time,
+      uint32_t output_time, float epsilon, uint32_t aiv_num);
   extern void get_masked_input_and_mask_impl(
     void* stream,
     void* input,

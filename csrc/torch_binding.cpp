@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 
+#include <algorithm>
 #include <torch/extension.h>
 #include <torch/library.h>
 #include <torch/version.h>
@@ -316,6 +317,67 @@ AscendType get_dtype_from_torch(at::ScalarType scalarType)
     } else {
         return AscendType::FP16;
     }
+}
+
+at::Tensor channel_layer_norm_mish(const at::Tensor &x,
+                                   const at::Tensor &weight,
+                                   const at::Tensor &bias,
+                                   double epsilon)
+{
+    TORCH_CHECK(x.device().is_privateuseone(), "x must be on NPU");
+    TORCH_CHECK(x.scalar_type() == at::kFloat, "x must be float32");
+    TORCH_CHECK(x.dim() == 3, "x must have shape [B, C, T]");
+    TORCH_CHECK(x.size(0) > 0, "B must be positive");
+    TORCH_CHECK(x.size(1) == 512 || x.size(1) == 1024,
+                "only C=512 or C=1024 is supported");
+    TORCH_CHECK(x.size(2) >= 8, "T must be at least 8");
+    TORCH_CHECK(x.is_contiguous(), "x must be contiguous NCL");
+    TORCH_CHECK(weight.device() == x.device() && bias.device() == x.device(),
+                "weight and bias must be on the same NPU as x");
+    TORCH_CHECK(weight.scalar_type() == at::kFloat && bias.scalar_type() == at::kFloat,
+                "weight and bias must be float32");
+    TORCH_CHECK(weight.dim() == 1 && bias.dim() == 1,
+                "weight and bias must be one-dimensional");
+    TORCH_CHECK(weight.is_contiguous() && bias.is_contiguous(),
+                "weight and bias must be contiguous");
+    TORCH_CHECK(weight.numel() == x.size(1) && bias.numel() == x.size(1),
+                "weight and bias must match channels");
+
+    const c10_npu::OptionalNPUGuard npu_guard(x.device());
+    const int64_t output_time = (x.size(2) + 7) / 8 * 8;
+    auto output = at::empty({x.size(0), x.size(1), output_time}, x.options());
+    aclrtStream stream = c10_npu::getCurrentNPUStream().stream();
+    const uint32_t work_items = static_cast<uint32_t>(
+        x.size(0) * ((x.size(2) + 7) / 8));
+    int32_t device_id = 0;
+    int64_t aiv_count = 0;
+    TORCH_CHECK(aclrtGetDevice(&device_id) == ACL_SUCCESS);
+    TORCH_CHECK(aclGetDeviceCapability(device_id,
+                                       ACL_DEVICE_INFO_VECTOR_CORE_NUM,
+                                       &aiv_count) == ACL_SUCCESS);
+    TORCH_CHECK(aiv_count > 0, "NPU reports no vector cores");
+    const uint32_t block_dim = static_cast<uint32_t>(
+        std::min<int64_t>(work_items, aiv_count));
+
+    at_npu::native::OpCommand cmd;
+    cmd.Name("channel_layer_norm_mish");
+    cmd.SetCustomHandler([stream, x_ptr = x.data_ptr(),
+                          weight_ptr = weight.data_ptr(),
+                          bias_ptr = bias.data_ptr(),
+                          out_ptr = output.data_ptr(),
+                          batch = static_cast<uint32_t>(x.size(0)),
+                          channels = static_cast<uint32_t>(x.size(1)),
+                          time = static_cast<uint32_t>(x.size(2)),
+                          output_time = static_cast<uint32_t>(output_time),
+                          epsilon = static_cast<float>(epsilon),
+                          block_dim]() -> int {
+        channel_layer_norm_mish_impl(stream, x_ptr, weight_ptr, bias_ptr,
+                                     out_ptr, batch, channels, time,
+                                     output_time, epsilon, block_dim);
+        return 0;
+    });
+    cmd.Run();
+    return output.slice(2, 0, x.size(2));
 }
 
 std::tuple<at::Tensor, at::Tensor> get_masked_input_and_mask(
@@ -2283,6 +2345,11 @@ TORCH_LIBRARY_EXPAND(CONCAT(_C, _ascend), ops)
 
 #ifdef VLLM_ENABLE_ATB_AND_DIRECT_KERNELS
     // Direct kernel custom ops
+    ops.def(
+        "channel_layer_norm_mish(Tensor x, Tensor weight, Tensor bias, "
+        "float epsilon=1e-5) -> Tensor");
+    ops.impl("channel_layer_norm_mish", torch::kPrivateUse1,
+             &vllm_ascend::channel_layer_norm_mish);
     ops.def(
         "get_masked_input_and_mask(Tensor input, "
         "                         int org_vocab_start_index, "

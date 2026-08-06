@@ -45,6 +45,17 @@ c10::SymInt ceil_div(const c10::SymInt& value, int64_t divisor)
 }
 
 #ifdef VLLM_ENABLE_ATB_AND_DIRECT_KERNELS
+at::Tensor channel_layer_norm_mish_meta(
+    const at::Tensor &x, const at::Tensor &weight, const at::Tensor &bias,
+    double epsilon)
+{
+    auto time = x.sym_size(2);
+    auto padded_time = ceil_div(time, 8) * c10::SymInt(8);
+    auto output = at::empty_symint(
+        {x.sym_size(0), x.sym_size(1), padded_time}, x.options());
+    return output.slice_symint(2, c10::SymInt(0), time, c10::SymInt(1));
+}
+
 std::tuple<at::Tensor, at::Tensor> get_masked_input_and_mask_meta(
     at::Tensor &input,
     const int64_t org_vocab_start_index,
@@ -1760,6 +1771,8 @@ TORCH_LIBRARY_IMPL_EXPAND(CONCAT(_C, _ascend), Meta, ops) {
     // launch host print from device for tensors
     ops.impl("device_print_tensor", &vllm_ascend::meta::device_print_tensor_meta);
 #ifdef VLLM_ENABLE_ATB_AND_DIRECT_KERNELS
+    ops.impl("channel_layer_norm_mish",
+             &vllm_ascend::meta::channel_layer_norm_mish_meta);
     // Direct kernel meta implementations
     ops.impl("get_masked_input_and_mask", &vllm_ascend::meta::get_masked_input_and_mask_meta);
     // Bgmv expand
